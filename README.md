@@ -1,26 +1,26 @@
 gilb(1) -- Gilab IRC Bot
 =======================
 
-## SYNOPSIS
+## Synopsis
 
 `./gilb [config.yml]`
 
-## DESCRIPTION
+## Description
 
 Ruby IRC bot with builtin webserver for Gitlab webhooks. Inspired by [aleks/gitlab-irc](https://github.com/aleks/gitlab-irc)
 
-## INSTALATION
+## Installation
 
   1. Just clone this repository wherever you want;
   2. Run `bundle install` to install dependencies.
 
-## USAGE
+## Usage
 
 Create your config file `config.yml` taking as exemple the `config.yml.example` and launch it: `./gilb`.
 
 Then you just need to add the url `http://yourserver.com:4567/commit` into you project's webhooks.
 
-## TESTING
+## Testing
 
 You can test it running the script:
 
@@ -34,7 +34,7 @@ You should see this output:
     PRIVMSG #channel :[gilb/master] 4d117cf6b 'Sample commit' <Carla Souza>
     PART #channel
 
-## OPTIONS
+## Options
 
   * Webserver settings:
 
@@ -81,7 +81,7 @@ You should see this output:
               :channels:
                 - "#project2_channel"
 
-## FILES
+## Files
 
 ### Example of config.yml
 
@@ -118,7 +118,7 @@ You should see this output:
             - branch_deleted
             - branch_merged
 
-## OUTPUTS
+## Messages
 
 One commit to master
 
@@ -147,7 +147,7 @@ Branch was deleted
 
     [gilb] Branch deleted: 'gilb/feature42' <Carla Souza>
 
-## COPYRIGHT
+## Copyright
 
 Gilb is Copyright (C) 2013 Carla Souza <[carlasouza.com](http://carlasouza.com)>.
 License GPLv3+: GNU GPL version 3 or later <[gnu.org/licenses/gpl.html](http://gnu.org/licenses/gpl.html)>.
