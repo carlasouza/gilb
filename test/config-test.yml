@@ -1,0 +1,18 @@
+:http:
+  :host: 0.0.0.0
+  :port: 1234
+:behavior:
+  :shorten_url: true
+:logging:
+  :level: debug
+  :output: gilb-bot.log
+:irc:
+  :server: localhost
+  :port: 6667
+  :nick: gilb
+  :join_channel: true
+:git:
+  :projects:
+    gilb:
+      :channels:
+        - "#channel"

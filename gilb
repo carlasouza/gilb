@@ -1,0 +1,200 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'open-uri'
+require 'net/http'
+require 'uri'
+require 'sinatra'
+require 'json'
+require 'yaml'
+
+# If no argument have been passed, use 'config.yml' as default config file
+config_file = ARGV.shift || "config.yml"
+
+unless File.exists?(config_file)
+  Log.error "Config file not found: %s" % config_file
+  exit
+end
+
+$config = YAML.load_file config_file
+
+# Config variables
+configure do
+  set :port, $config[:http][:port]
+  set :bind, $config[:http][:host]
+  set :repos, $config[:git][:projects]
+  set :irc_host, $config[:irc][:server]
+  set :irc_port, $config[:irc][:port]
+  set :irc_nick, $config[:irc][:nick]
+  set :irc_join_channel, $config[:irc][:join_channel]
+  set :logging_level, $config[:logging][:level]
+  set :logging_output, $config[:logging][:output]
+  set :shorten_url, $config[:behavior][:shorten_url]
+end
+
+# Connects to IRC server
+class IRC
+  attr_accessor :socket
+
+  def self.start
+    @socket = TCPSocket.open(settings.irc_host, settings.irc_port)
+    @socket.puts("NICK #{settings.irc_nick}")
+    @socket.puts("USER #{settings.irc_nick} 8 * : #{settings.irc_nick}")
+  rescue Exception => e
+    Log.fatal 'IRC server unreacheable' if @socket.nil?
+    e.backtrace.each {|msg| Log.fatal msg}
+    exit
+  end
+
+  def self.send(channels, msgs)
+    [channels].flatten.each do |channel|
+      # Joins if buffer is a channel and join is enabled
+      @socket.puts("JOIN #{channel}") if settings.irc_join_channel && channel.start_with?('#')
+      [msgs].flatten.each do |msg|
+        Log.info "PRIVMSG #{channel} :#{msg}"
+        @socket.puts "PRIVMSG #{channel} :#{msg}"
+      end
+      @socket.puts("PART #{channel}") if settings.irc_join_channel && channel.start_with?('#')
+    end
+  end
+
+  def self.close
+    @socket.close unless @socket.nil?
+  end
+end
+
+# Singleton logger
+class Log
+  attr_accessor :log
+
+  def self.method_missing type, msg
+    @log ||= init
+    @log.send(type, msg)
+  end
+
+  private
+  def self.init
+    output = settings.logging_output.nil? ? STDOUT : settings.logging_output
+    log = Logger.new(output)
+    log.level = begin
+                  eval("Logger::#{settings.logging_level.upcase}")
+                rescue
+                  Logger::INFO
+                end
+    log
+  end
+end
+
+# Available events that can be tracked (GitLab version 4.1)
+module Event
+  COMMITS = "commits"
+  BRANCH_DELETED = "branch_deleted"
+  BRANCH_CREATED = "branch_created"
+  BRANCH_MERGED  = "branch_merged"
+end
+
+def tracks_event repo, event
+  res = settings.repos[repo][:events].nil? || settings.repos[repo][:events].include?(event)
+  Log.debug "Should I output event '#{event}' for repository '#{repo}'? #{res}"
+  res
+end
+
+def tracks_branch repo, branch
+  res = settings.repos[repo][:branches].nil? || settings.repos[repo][:branches].include?(branch)
+  Log.debug "Should I track commits for '#{repo}/#{branch}'? #{res}"
+  res
+end
+
+def get_buffers repo
+  settings.repos[repo][:channels]
+end
+
+def branch_deleted repo, branch, user #It can be due to merging
+  Log.debug 'Branch deleted!'
+  IRC.send get_buffers(repo), "[#{repo}] Branch deleted: '#{repo}/#{branch}' <#{user}>" if tracks_event(repo, Event::BRANCH_DELETED)
+end
+
+def branch_new repo, branch, user
+  Log.debug 'Branch created!'
+  IRC.send get_buffers(repo), "[#{repo}] New branch: '#{repo}/#{branch}' <#{user}>" if tracks_event(repo, Event::BRANCH_CREATED)
+end
+
+def branch_merged repo, branch, hash, author, new_branch
+  Log.debug 'Branch merged!'
+  res = "[#{repo}] #{hash} - Merged '#{new_branch}' -> '#{branch}' <#{author}>"
+  IRC.send get_buffers(repo), res if tracks_event(repo, Event::BRANCH_MERGED)
+end
+
+def filter_commits repo, diff, branch, commits
+  last = commits.last
+  if last['message'].start_with?'Merge branch' # These commits came from a branch merge
+    branch_merged(repo, branch, last['id'][0..8], last['author']['name'], last['message'].split("'")[1])
+  else # Regular commits to a branch
+    print_commits(diff, repo, branch, commits) if tracks_branch(repo, branch) if tracks_event(repo, Event::COMMITS)
+  end
+end
+
+def print_commits diff, repo, branch, commits
+  qty = commits.size
+
+  if qty == 1 # Don't flood with 2 lines for only 1 commit
+    c = commits.first
+    IRC.send get_buffers(repo), "[#{repo}/#{branch}] #{c['id'][0..8]} '#{c['message']}' <#{c['author']['name']}>"
+  else
+    sufix = qty <= 1 ? '' : 's'
+    msgs = ["[#{repo}/#{branch}] #{qty} commit#{sufix} (diff: #{diff} ):"]
+    commits.each do |commit|
+      msgs << "  #{commit['id'][0..8]} '#{commit['message']}' <#{commit['author']['name']}>"
+    end
+    IRC.send get_buffers(repo), msgs
+  end
+end
+
+def shorten url
+  http = Net::HTTP.new('www.googleapis.com', 443)
+  http.use_ssl = true
+  http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+  request = Net::HTTP::Post.new("/urlshortener/v1/url")
+  request.add_field('Content-Type', 'application/json')
+  request.body = "{\"longUrl\":\"#{url}\"}"
+  response = http.request(request)
+  JSON.parse(response.body)['id']
+end
+
+post '/commit' do
+  Log.debug "/commit"
+
+  Thread.new do
+    begin
+      IRC.start
+
+      json = JSON.parse request.env["rack.input"].read
+      Log.debug "#{json.inspect}"
+
+      branch = json['ref'].split('/').last
+      repo = json['repository']['name']
+      after, before = json['after'][0..8], json['before'][0..8]
+      user = json['user_name']
+
+      Log.info "New push to '#{repo}'"
+
+      if before == '000000000' #Branch created
+        branch_new(repo, branch, user)
+      elsif json['total_commits_count'] != 0
+        if after == '000000000' #Branch deleted
+          branch_deleted(repo, branch, user)
+        else # Commits to existing branch!
+          url = "#{json['repository']['homepage']}/compare/#{before}...#{after}"
+          diff = settings.shorten_url ? shorten(url) : url
+          filter_commits(repo, diff, branch, json['commits'])
+        end
+      end
+    rescue Exception => e
+      e.backtrace.each {|msg| Log.error msg}
+    ensure
+      IRC.close
+      Thread.stop
+    end
+  end
+
+end

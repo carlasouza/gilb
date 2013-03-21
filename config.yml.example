@@ -1,0 +1,33 @@
+:http:
+  :host: 0.0.0.0
+  :port: 4567
+:behavior:
+  :shorten_url: true
+:logging:
+  :level: debug
+  :output: bot-Gilb.log
+:irc:
+  :server: localhost
+  :port: 6667
+  :nick: gilb
+  :join_channel: true
+:git:
+  :projects:
+    project1:
+      :branches:
+        - master
+        - feature42
+      :channels:
+        - "#project1-channel"
+      :events:
+        - branch_merged
+    project2:
+      :channels:
+        - "#project2_channel"
+        - "someones_nick"
+      :events:
+        - commits
+        - branch_created
+        - branch_deleted
+        - branch_merged
+
