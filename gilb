@@ -12,7 +12,7 @@ require 'yaml'
 config_file = ARGV.shift || "config.yml"
 
 unless File.exists?(config_file)
-  Log.error "Config file not found: %s" % config_file
+  @log.error "Config file not found: %s" % config_file
   exit
 end
 
@@ -36,13 +36,13 @@ end
 class IRC
   attr_accessor :socket
 
-  def self.start
+  def self.start settings
     @socket = TCPSocket.open(settings.irc_host, settings.irc_port)
     @socket.puts("NICK #{settings.irc_nick}")
     @socket.puts("USER #{settings.irc_nick} 8 * : #{settings.irc_nick}")
   rescue Exception => e
-    Log.fatal 'IRC server unreacheable' if @socket.nil?
-    e.backtrace.each {|msg| Log.fatal msg}
+    @log.fatal 'IRC server unreacheable' if @socket.nil?
+    e.backtrace.each {|msg| @log.fatal msg}
     exit
   end
 
@@ -51,7 +51,7 @@ class IRC
       # Joins if buffer is a channel and join is enabled
       @socket.puts("JOIN #{channel}") if settings.irc_join_channel && channel.start_with?('#')
       [msgs].flatten.each do |msg|
-        Log.info "PRIVMSG #{channel} :#{msg}"
+        p "PRIVMSG #{channel} :#{msg}"
         @socket.puts "PRIVMSG #{channel} :#{msg}"
       end
       @socket.puts("PART #{channel}") if settings.irc_join_channel && channel.start_with?('#')
@@ -67,13 +67,11 @@ end
 class Log
   attr_accessor :log
 
-  def self.method_missing type, msg
-    @log ||= init
+  def method_missing type, msg
     @log.send(type, msg)
   end
 
-  private
-  def self.init
+  def self.init settings
     output = settings.logging_output.nil? ? STDOUT : settings.logging_output
     log = Logger.new(output)
     log.level = begin
@@ -95,13 +93,13 @@ end
 
 def tracks_event repo, event
   res = settings.repos[repo][:events].nil? || settings.repos[repo][:events].include?(event)
-  Log.debug "Should I output event '#{event}' for repository '#{repo}'? #{res}"
+  @log.debug "Should I output event '#{event}' for repository '#{repo}'? #{res}"
   res
 end
 
 def tracks_branch repo, branch
   res = settings.repos[repo][:branches].nil? || settings.repos[repo][:branches].include?(branch)
-  Log.debug "Should I track commits for '#{repo}/#{branch}'? #{res}"
+  @log.debug "Should I track commits for '#{repo}/#{branch}'? #{res}"
   res
 end
 
@@ -110,25 +108,27 @@ def get_buffers repo
 end
 
 def branch_deleted repo, branch, user #It can be due to merging
-  Log.debug 'Branch deleted!'
+  @log.debug 'Branch deleted!'
   IRC.send get_buffers(repo), "[#{repo}] Branch deleted: '#{repo}/#{branch}' <#{user}>" if tracks_event(repo, Event::BRANCH_DELETED)
 end
 
 def branch_new repo, branch, user
-  Log.debug 'Branch created!'
+  @log.debug 'Branch created!'
   IRC.send get_buffers(repo), "[#{repo}] New branch: '#{repo}/#{branch}' <#{user}>" if tracks_event(repo, Event::BRANCH_CREATED)
 end
 
-def branch_merged repo, branch, hash, author, new_branch
-  Log.debug 'Branch merged!'
-  res = "[#{repo}] #{hash} - Merged '#{new_branch}' -> '#{branch}' <#{author}>"
+def branch_merged repo, branch, hash, author, new_branch, qty
+  @log.debug 'Branch merged!'
+  sufix = qty == 1 ? '' : 's'
+  res = "[#{repo}] #{hash} - Merged '#{new_branch}' -> '#{branch}' <#{author}> (#{qty} commit#{sufix})"
   IRC.send get_buffers(repo), res if tracks_event(repo, Event::BRANCH_MERGED)
 end
 
 def filter_commits repo, diff, branch, commits
   last = commits.last
+  qty = commits.size
   if last['message'].start_with?'Merge branch' # These commits came from a branch merge
-    branch_merged(repo, branch, last['id'][0..8], last['author']['name'], last['message'].split("'")[1])
+    branch_merged(repo, branch, last['id'][0..8], last['author']['name'], last['message'].split("'")[1], qty)
   else # Regular commits to a branch
     print_commits(diff, repo, branch, commits) if tracks_branch(repo, branch) if tracks_event(repo, Event::COMMITS)
   end
@@ -143,7 +143,10 @@ def print_commits diff, repo, branch, commits
   else
     sufix = qty <= 1 ? '' : 's'
     msgs = ["[#{repo}/#{branch}] #{qty} commit#{sufix} (diff: #{diff} ):"]
-    commits.each do |commit|
+    if qty > 3
+      msgs.first << " (Showing first 3 commits)"
+    end
+    commits[0..2].each do |commit|
       msgs << "  #{commit['id'][0..8]} '#{commit['message']}' <#{commit['author']['name']}>"
     end
     IRC.send get_buffers(repo), msgs
@@ -162,21 +165,22 @@ def shorten url
 end
 
 post '/commit' do
-  Log.debug "/commit"
+  @log = Log.init settings
+  @log.debug "/commit"
 
   Thread.new do
     begin
-      IRC.start
+      IRC.start settings
 
       json = JSON.parse request.env["rack.input"].read
-      Log.debug "#{json.inspect}"
+      @log.debug "#{json.inspect}"
 
       branch = json['ref'].split('/').last
       repo = json['repository']['name']
       after, before = json['after'][0..8], json['before'][0..8]
       user = json['user_name']
 
-      Log.info "New push to '#{repo}'"
+      @log.info "New push to '#{repo}'"
 
       if before == '000000000' #Branch created
         branch_new(repo, branch, user)
@@ -190,7 +194,7 @@ post '/commit' do
         end
       end
     rescue Exception => e
-      e.backtrace.each {|msg| Log.error msg}
+      e.backtrace.each {|msg| @log.error msg}
     ensure
       IRC.close
       Thread.stop
