@@ -1,4 +1,4 @@
-gilb(1) -- Gilab IRC Bot
+gilb(1) -- Gitlab IRC Bot
 =======================
 
 ## Synopsis
